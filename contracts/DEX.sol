@@ -12,6 +12,8 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
  * @dev A simple decentralized exchange that allows users to:
  * 1. Add liquidity (token pairs) and receive LP tokens
  * 2. Remove liquidity using LP tokens
+ * 3. Swap tokens based on current liquidity
+ * 4. Query current exchange rates
  */
 contract DEX is ERC20, Ownable {
     using SafeERC20 for IERC20;
@@ -27,6 +29,7 @@ contract DEX is ERC20, Ownable {
     // Events
     event LiquidityAdded(address indexed provider, uint256 amountA, uint256 amountB, uint256 liquidity);
     event LiquidityRemoved(address indexed provider, uint256 amountA, uint256 amountB, uint256 liquidity);
+    event TokenSwap(address indexed user, uint256 amountIn, address tokenIn, uint256 amountOut, address tokenOut);
 
     /**
      * @dev Constructor to initialize the DEX with a pair of tokens
@@ -180,6 +183,104 @@ contract DEX is ERC20, Ownable {
         }
     }
 
+    /**
+     * @dev Swaps an exact amount of tokenA for tokenB or vice versa
+     * @param amountIn The amount of input token to swap
+     * @param amountOutMin The minimum amount of output token to receive
+     * @param tokenIn The address of the input token (must be tokenA or tokenB)
+     * @param to The address that will receive the output tokens
+     * @return amountOut The amount of output token received
+     */
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address tokenIn,
+        address to
+    ) external returns (uint256 amountOut) {
+        require(tokenIn == tokenA || tokenIn == tokenB, "DEX: INVALID_TOKEN");
+        require(amountIn > 0, "DEX: INSUFFICIENT_INPUT_AMOUNT");
+        
+        (uint256 reserveA, uint256 reserveB) = getReserves();
+        require(reserveA > 0 && reserveB > 0, "DEX: INSUFFICIENT_LIQUIDITY");
+        
+        // Determine which token is being swapped in and out
+        bool isTokenAIn = tokenIn == tokenA;
+        uint256 reserveIn = isTokenAIn ? reserveA : reserveB;
+        uint256 reserveOut = isTokenAIn ? reserveB : reserveA;
+        address tokenOut = isTokenAIn ? tokenB : tokenA;
+        
+        // Calculate output amount using the constant product formula (x * y = k)
+        // We apply a 0.3% fee by multiplying amountIn by 997/1000
+        uint256 amountInWithFee = amountIn * 997;
+        amountOut = (amountInWithFee * reserveOut) / (reserveIn * 1000 + amountInWithFee);
+        
+        require(amountOut >= amountOutMin, "DEX: INSUFFICIENT_OUTPUT_AMOUNT");
+        require(amountOut < reserveOut, "DEX: INSUFFICIENT_LIQUIDITY");
+        
+        // Transfer input tokens from user to the contract
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+        
+        // Transfer output tokens to the recipient
+        IERC20(tokenOut).safeTransfer(to, amountOut);
+        
+        emit TokenSwap(msg.sender, amountIn, tokenIn, amountOut, tokenOut);
+        
+        return amountOut;
+    }
+    
+    /**
+     * @dev Calculates the output amount for a given input amount
+     * @param amountIn The amount of input token
+     * @param tokenIn The address of the input token (must be tokenA or tokenB)
+     * @return amountOut The amount of output token that would be received
+     */
+    function getAmountOut(
+        uint256 amountIn,
+        address tokenIn
+    ) external view returns (uint256 amountOut) {
+        require(tokenIn == tokenA || tokenIn == tokenB, "DEX: INVALID_TOKEN");
+        require(amountIn > 0, "DEX: INSUFFICIENT_INPUT_AMOUNT");
+        
+        (uint256 reserveA, uint256 reserveB) = getReserves();
+        if (reserveA == 0 || reserveB == 0) {
+            return 0; // Return 0 to indicate insufficient liquidity
+        }
+        
+        // Determine which token is being swapped in and out
+        bool isTokenAIn = tokenIn == tokenA;
+        uint256 reserveIn = isTokenAIn ? reserveA : reserveB;
+        uint256 reserveOut = isTokenAIn ? reserveB : reserveA;
+        
+        // Calculate output amount using the constant product formula (x * y = k)
+        // We apply a 0.3% fee by multiplying amountIn by 997/1000
+        uint256 amountInWithFee = amountIn * 997;
+        amountOut = (amountInWithFee * reserveOut) / (reserveIn * 1000 + amountInWithFee);
+        
+        return amountOut;
+    }
+    
+    /**
+     * @dev Returns the current exchange rate between tokenA and tokenB
+     * @return rateAtoB The exchange rate from tokenA to tokenB (how many tokenB for 1 tokenA)
+     * @return rateBtoA The exchange rate from tokenB to tokenA (how many tokenA for 1 tokenB)
+     */
+    function getExchangeRate() external view returns (uint256 rateAtoB, uint256 rateBtoA) {
+        (uint256 reserveA, uint256 reserveB) = getReserves();
+        
+        if (reserveA == 0 || reserveB == 0) {
+            return (0, 0); // Return 0 to indicate insufficient liquidity
+        }
+        
+        // Calculate exchange rates with 18 decimals of precision
+        // 1 tokenA = ? tokenB
+        rateAtoB = (reserveB * 1e18) / reserveA;
+        
+        // 1 tokenB = ? tokenA
+        rateBtoA = (reserveA * 1e18) / reserveB;
+        
+        return (rateAtoB, rateBtoA);
+    }
+    
     /**
      * @dev Mints LP tokens based on the current reserves and token amounts
      * @param to The address that will receive the LP tokens

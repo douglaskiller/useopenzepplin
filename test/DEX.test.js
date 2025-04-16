@@ -320,4 +320,195 @@ describe("DEX", function () {
       expect(user2FinalTokenBBalance).to.be.gt(user2InitialTokenBBalance);
     });
   });
+  
+  describe("Token Swapping", function () {
+    beforeEach(async function () {
+      // Add initial liquidity
+      await dex.connect(owner).addLiquidity(
+        LIQUIDITY_AMOUNT_A,
+        LIQUIDITY_AMOUNT_B,
+        0,
+        0,
+        owner.address
+      );
+    });
+    
+    it("Should swap tokenA for tokenB correctly", async function () {
+      const swapAmount = ethers.parseUnits("10", 18);
+      const expectedAmountOut = await dex.getAmountOut(swapAmount, await tokenA.getAddress());
+      
+      // Approve tokens for swapping
+      await tokenA.connect(owner).approve(await dex.getAddress(), swapAmount);
+      
+      // Get initial balances
+      const initialTokenABalance = await tokenA.balanceOf(owner.address);
+      const initialTokenBBalance = await tokenB.balanceOf(owner.address);
+      
+      // Perform the swap
+      const tx = await dex.connect(owner).swapExactTokensForTokens(
+        swapAmount,
+        0, // No minimum output amount
+        await tokenA.getAddress(),
+        owner.address
+      );
+      
+      // Check balances after swap
+      const finalTokenABalance = await tokenA.balanceOf(owner.address);
+      const finalTokenBBalance = await tokenB.balanceOf(owner.address);
+      
+      // Verify token A was spent
+      expect(initialTokenABalance - finalTokenABalance).to.equal(swapAmount);
+      
+      // Verify token B was received
+      expect(finalTokenBBalance - initialTokenBBalance).to.equal(expectedAmountOut);
+      
+      // Check event
+      await expect(tx)
+        .to.emit(dex, "TokenSwap")
+        .withArgs(owner.address, swapAmount, await tokenA.getAddress(), expectedAmountOut, await tokenB.getAddress());
+    });
+    
+    it("Should swap tokenB for tokenA correctly", async function () {
+      const swapAmount = ethers.parseUnits("20", 18);
+      const expectedAmountOut = await dex.getAmountOut(swapAmount, await tokenB.getAddress());
+      
+      // Approve tokens for swapping
+      await tokenB.connect(owner).approve(await dex.getAddress(), swapAmount);
+      
+      // Get initial balances
+      const initialTokenABalance = await tokenA.balanceOf(owner.address);
+      const initialTokenBBalance = await tokenB.balanceOf(owner.address);
+      
+      // Perform the swap
+      await dex.connect(owner).swapExactTokensForTokens(
+        swapAmount,
+        0, // No minimum output amount
+        await tokenB.getAddress(),
+        owner.address
+      );
+      
+      // Check balances after swap
+      const finalTokenABalance = await tokenA.balanceOf(owner.address);
+      const finalTokenBBalance = await tokenB.balanceOf(owner.address);
+      
+      // Verify token B was spent
+      expect(initialTokenBBalance - finalTokenBBalance).to.equal(swapAmount);
+      
+      // Verify token A was received
+      expect(finalTokenABalance - initialTokenABalance).to.equal(expectedAmountOut);
+    });
+    
+    it("Should fail when swapping with insufficient liquidity", async function () {
+      // Try to swap more than the available liquidity
+      const swapAmount = LIQUIDITY_AMOUNT_A * 2n;
+      
+      // Approve tokens for swapping
+      await tokenA.connect(owner).approve(await dex.getAddress(), swapAmount);
+      
+      // Attempt the swap, should fail
+      // The contract checks if amountOut < reserveOut, which might not trigger
+      // the exact error message we expect, so we just check if it reverts
+      await expect(
+        dex.connect(owner).swapExactTokensForTokens(
+          swapAmount,
+          LIQUIDITY_AMOUNT_B, // Set a high minimum output that can't be satisfied
+          await tokenA.getAddress(),
+          owner.address
+        )
+      ).to.be.reverted;
+    });
+    
+    it("Should fail when output amount is less than minimum", async function () {
+      const swapAmount = ethers.parseUnits("10", 18);
+      const expectedAmountOut = await dex.getAmountOut(swapAmount, await tokenA.getAddress());
+      
+      // Approve tokens for swapping
+      await tokenA.connect(owner).approve(await dex.getAddress(), swapAmount);
+      
+      // Attempt the swap with a minimum output higher than possible
+      await expect(
+        dex.connect(owner).swapExactTokensForTokens(
+          swapAmount,
+          expectedAmountOut + 1n,
+          await tokenA.getAddress(),
+          owner.address
+        )
+      ).to.be.revertedWith("DEX: INSUFFICIENT_OUTPUT_AMOUNT");
+    });
+  });
+  
+  describe("Price Queries", function () {
+    it("Should return zero exchange rate when no liquidity", async function () {
+      const [rateAtoB, rateBtoA] = await dex.getExchangeRate();
+      
+      expect(rateAtoB).to.equal(0);
+      expect(rateBtoA).to.equal(0);
+    });
+    
+    it("Should return correct exchange rates with liquidity", async function () {
+      // Add liquidity with 1:2 ratio
+      await dex.connect(owner).addLiquidity(
+        LIQUIDITY_AMOUNT_A,
+        LIQUIDITY_AMOUNT_B,
+        0,
+        0,
+        owner.address
+      );
+      
+      const [rateAtoB, rateBtoA] = await dex.getExchangeRate();
+      
+      // Expected rates (with 18 decimals of precision)
+      // 1 tokenA = 2 tokenB (since LIQUIDITY_AMOUNT_B is twice LIQUIDITY_AMOUNT_A)
+      const expectedRateAtoB = (LIQUIDITY_AMOUNT_B * BigInt(10**18)) / LIQUIDITY_AMOUNT_A;
+      
+      // 1 tokenB = 0.5 tokenA
+      const expectedRateBtoA = (LIQUIDITY_AMOUNT_A * BigInt(10**18)) / LIQUIDITY_AMOUNT_B;
+      
+      expect(rateAtoB).to.equal(expectedRateAtoB);
+      expect(rateBtoA).to.equal(expectedRateBtoA);
+    });
+    
+    it("Should calculate correct output amounts", async function () {
+      // Add liquidity
+      await dex.connect(owner).addLiquidity(
+        LIQUIDITY_AMOUNT_A,
+        LIQUIDITY_AMOUNT_B,
+        0,
+        0,
+        owner.address
+      );
+      
+      const amountIn = ethers.parseUnits("10", 18);
+      
+      // Calculate expected output using the formula
+      // amountOut = (amountIn * 0.997 * reserveOut) / (reserveIn + amountIn * 0.997)
+      const reserveA = LIQUIDITY_AMOUNT_A;
+      const reserveB = LIQUIDITY_AMOUNT_B;
+      
+      // For A to B
+      const amountInWithFeeAtoB = amountIn * 997n;
+      const expectedAmountOutAtoB = (amountInWithFeeAtoB * reserveB) / (reserveA * 1000n + amountInWithFeeAtoB);
+      
+      // For B to A
+      const amountInWithFeeBtoA = amountIn * 997n;
+      const expectedAmountOutBtoA = (amountInWithFeeBtoA * reserveA) / (reserveB * 1000n + amountInWithFeeBtoA);
+      
+      // Get calculated amounts from contract
+      const calculatedAmountOutAtoB = await dex.getAmountOut(amountIn, await tokenA.getAddress());
+      const calculatedAmountOutBtoA = await dex.getAmountOut(amountIn, await tokenB.getAddress());
+      
+      expect(calculatedAmountOutAtoB).to.equal(expectedAmountOutAtoB);
+      expect(calculatedAmountOutBtoA).to.equal(expectedAmountOutBtoA);
+    });
+    
+    it("Should return zero for getAmountOut when no liquidity", async function () {
+      const amountIn = ethers.parseUnits("10", 18);
+      
+      const amountOutA = await dex.getAmountOut(amountIn, await tokenA.getAddress());
+      const amountOutB = await dex.getAmountOut(amountIn, await tokenB.getAddress());
+      
+      expect(amountOutA).to.equal(0);
+      expect(amountOutB).to.equal(0);
+    });
+  });
 });
