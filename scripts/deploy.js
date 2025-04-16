@@ -21,6 +21,12 @@ async function main() {
   await dex.waitForDeployment();
   console.log(`DEX deployed to: ${await dex.getAddress()}`);
 
+  // Deploy AirdorpV2
+  const AirdropV2 = await ethers.getContractFactory("AirdropV2");
+  const airdrop = await AirdropV2.deploy(await tokenA.getAddress());
+  await airdrop.waitForDeployment();
+  console.log(`AirdorpV2 deployed to: ${await airdrop.getAddress()}`);
+
   console.log("Deployment completed!");
 }
 
