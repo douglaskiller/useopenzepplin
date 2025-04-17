@@ -15,6 +15,12 @@ const GANACHE_PRIVATE_KEY_2 = process.env.GANACHE_PRIVATE_KEY_2
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: "0.8.28",
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts"
+  },
   networks: {
     sepolia: {
       url: SEPOLIA_RPC_URL,
